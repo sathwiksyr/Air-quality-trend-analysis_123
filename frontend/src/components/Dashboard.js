@@ -40,7 +40,6 @@ function Dashboard({ setIsLoggedIn }) {
       Authorization: `Bearer ${token}`,
     };
 
-    // Fetch Air Data
     axios
       .get(`${API_URL}/api/airdata`, { headers })
       .then((res) => setData(res.data))
@@ -49,7 +48,6 @@ function Dashboard({ setIsLoggedIn }) {
         setIsLoggedIn(false);
       });
 
-    // Fetch User Data
     axios
       .get(`${API_URL}/api/user`, { headers })
       .then((res) => setUser(res.data))
@@ -87,33 +85,11 @@ function Dashboard({ setIsLoggedIn }) {
       yearlyData[year].length
   );
 
-  /* ================= SEASONAL VARIATION ================= */
-
-  const monthlyData = {};
-  data.forEach((item) => {
-    const month = new Date(item.date).getMonth();
-    if (!monthlyData[month]) monthlyData[month] = [];
-    monthlyData[month].push(item.aqi);
-  });
-
-  const months = [
-    "Jan","Feb","Mar","Apr","May","Jun",
-    "Jul","Aug","Sep","Oct","Nov","Dec"
-  ];
-
-  const seasonalAvg = months.map((_, index) => {
-    if (!monthlyData[index]) return 0;
-    return (
-      monthlyData[index].reduce((a, b) => a + b, 0) /
-      monthlyData[index].length
-    );
-  });
-
   /* ================= TREND CALCULATION ================= */
 
-  function calculateTrend(values) {
+  function calculateRegression(values) {
     const n = values.length;
-    if (n < 2) return 0;
+    if (n < 2) return { slope: 0, intercept: 0, r2: 0 };
 
     const x = Array.from({ length: n }, (_, i) => i);
 
@@ -122,67 +98,83 @@ function Dashboard({ setIsLoggedIn }) {
     const sumXY = x.reduce((a, b, i) => a + b * values[i], 0);
     const sumX2 = x.reduce((a, b) => a + b * b, 0);
 
-    return (
+    const slope =
       (n * sumXY - sumX * sumY) /
-      (n * sumX2 - sumX * sumX)
+      (n * sumX2 - sumX * sumX);
+
+    const intercept = (sumY - slope * sumX) / n;
+
+    const meanY = sumY / n;
+    const ssTot = values.reduce((a, y) => a + (y - meanY) ** 2, 0);
+    const ssRes = values.reduce(
+      (a, y, i) => a + (y - (slope * i + intercept)) ** 2,
+      0
     );
+
+    const r2 = 1 - ssRes / ssTot;
+
+    return { slope, intercept, r2 };
   }
 
-  const trendSlope = calculateTrend(yearlyAvgAQI);
+  const { slope: trendSlope, intercept, r2 } =
+    calculateRegression(yearlyAvgAQI);
 
   const predictedNextYear =
     yearlyAvgAQI.length
       ? yearlyAvgAQI[yearlyAvgAQI.length - 1] + trendSlope
       : 0;
 
+  /* ================= GROWTH RATE ================= */
+
+  const growthRate =
+    yearlyAvgAQI.length > 1
+      ? (
+          ((yearlyAvgAQI[yearlyAvgAQI.length - 1] -
+            yearlyAvgAQI[0]) /
+            yearlyAvgAQI[0]) *
+          100
+        ).toFixed(2)
+      : 0;
+
+  /* ================= 3-YEAR FORECAST ================= */
+
+  const forecastYears = ["+1", "+2", "+3"];
+  const forecastValues = forecastYears.map(
+    (_, i) =>
+      trendSlope * (yearlyAvgAQI.length + i) + intercept
+  );
+
   /* ================= CHART CONFIG ================= */
 
-  const mainChart = {
-    labels: data.map((item) => item.date),
-    datasets: [
-      {
-        label: "PM2.5",
-        data: data.map((item) => item.pm25),
-        borderColor: "#38bdf8",
-        backgroundColor: "rgba(56,189,248,0.2)",
-        tension: 0.4,
-        fill: true,
-      },
-      {
-        label: "AQI",
-        data: data.map((item) => item.aqi),
-        borderColor: "#f43f5e",
-        backgroundColor: "rgba(244,63,94,0.2)",
-        tension: 0.4,
-        fill: true,
-      },
-    ],
-  };
-
   const trendChart = {
-    labels: years,
+    labels: [...years, ...forecastYears],
     datasets: [
       {
         label: "Yearly AQI Trend",
-        data: yearlyAvgAQI,
+        data: [...yearlyAvgAQI, null, null, null],
         borderColor: "#f97316",
         backgroundColor: "rgba(249,115,22,0.2)",
         tension: 0.4,
         fill: true,
       },
-    ],
-  };
-
-  const seasonalChart = {
-    labels: months,
-    datasets: [
       {
-        label: "Seasonal AQI Variation",
-        data: seasonalAvg,
+        label: "Regression Line",
+        data: [
+          ...yearlyAvgAQI.map((_, i) => trendSlope * i + intercept),
+          ...forecastValues,
+        ],
         borderColor: "#22c55e",
-        backgroundColor: "rgba(34,197,94,0.2)",
+        borderDash: [5, 5],
         tension: 0.4,
-        fill: true,
+      },
+      {
+        label: "Forecast",
+        data: [
+          ...Array(yearlyAvgAQI.length).fill(null),
+          ...forecastValues,
+        ],
+        borderColor: "#38bdf8",
+        tension: 0.4,
       },
     ],
   };
@@ -236,26 +228,18 @@ function Dashboard({ setIsLoggedIn }) {
       }}>
         <Card title="Average AQI" value={avgAQI} />
         <Card title="Max PM2.5" value={maxPM} />
-        <Card title="Trend Slope" value={trendSlope.toFixed(2)} />
+        <Card title="Trend Slope (β₁)" value={trendSlope.toFixed(2)} />
+        <Card title="R² Value" value={r2.toFixed(2)} />
+        <Card title="Growth %" value={growthRate + "%"} />
         <Card title="Predicted Next Year AQI" value={predictedNextYear.toFixed(1)} />
       </div>
 
-      <Section title="Daily AQI & PM2.5">
-        <Line data={mainChart} options={options} />
-      </Section>
-
-      <Section title="Pollution Trend">
+      <Section title="Pollution Trend + Forecast">
         <Line data={trendChart} options={options} />
-      </Section>
-
-      <Section title="Seasonal Variation">
-        <Line data={seasonalChart} options={options} />
       </Section>
     </div>
   );
 }
-
-/* ================= REUSABLE COMPONENTS ================= */
 
 const Card = ({ title, value }) => (
   <div style={{
